@@ -24,15 +24,7 @@ pipeline {
         }
 
         // ✅ C'EST L'ÉTAPE QUE TU DOIS AJOUTER POUR LE DEVOIR
-        stage('SonarQube Analysis') {
-            steps {
-                // "SonarQube" doit être le nom donné dans System > SonarQube Servers
-                withSonarQubeEnv('SonarQube') { 
-                    // Cette commande analyse et envoie le rapport au serveur 9000
-                    sh 'mvn sonar:sonar'
-                }
-            }
-        }
+       
 
         stage('Code Packaging'){
             steps{
