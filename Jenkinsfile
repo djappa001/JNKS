@@ -3,8 +3,12 @@ pipeline {
 
     tools {
         maven 'M2_HOME' 
-        // J'ajoute le JDK pour être sûr que tout le monde utilise la bonne version
         jdk 'JAVA_HOME'
+    }
+
+    environment {
+        // Définit le nom de l'image pour éviter de le répéter partout
+        IMAGE_NAME = "yappa01/student-app"
     }
 
     stages {
@@ -14,60 +18,81 @@ pipeline {
             }
         }
 
-        stage('Build & Test') {
-            steps {
-                sh 'mvn clean test'
-            }
-        }
-
-        stage('SonarQube Analysis') {
+        // CORRECTION 0% COUVERTURE :
+        // On utilise 'verify' au lieu de 'test' pour générer le rapport JaCoCo
+        // Et on lance sonar tout de suite après pour qu'il trouve le rapport.
+        stage('Build, Test & Analyze') {
             steps {
                 withSonarQubeEnv('SonarQube') { 
-                    sh 'mvn sonar:sonar -Dsonar.projectKey=student-management -Dsonar.projectName="Student App"'
+                    sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=student-management -Dsonar.projectName="Student App"'
+                }
+            }
+        }
+        
+        // Attente de la validation du Quality Gate (Optionnel mais recommandé)
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
        
         stage('Code Packaging'){
             steps{
-                // Crée le fichier .jar dans le dossier target/
+                // Crée le .jar sans relancer les tests (déjà faits avant)
                 sh 'mvn package -DskipTests' 
             }
         }
 
-        // --- NOUVELLE ÉTAPE AJOUTÉE ---
-        stage('Docker Build & Push') {
+        // --- ÉTAPE 1 : DOCKER BUILD (Construction seulement) ---
+        stage('Docker Build') {
             steps {
                 script {
-                    // On récupère les identifiants 'dockerhub-id' configurés dans Jenkins
+                    echo "🔨 Construction de l'image Docker..."
+                    // Construction avec le numéro de build
+                    sh "docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                    
+                    // Tag de la version 'latest' en local
+                    sh "docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${IMAGE_NAME}:latest"
+                }
+            }
+        }
+
+        // --- ÉTAPE 2 : DOCKER PUSH (Envoi seulement) ---
+        stage('Docker Push') {
+            steps {
+                script {
+                    // On ne récupère les identifiants QUE pour le push
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-id', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                        echo "📤 Connexion et Envoi vers Docker Hub..."
                         
-                        // 1. Connexion sécurisée à Docker Hub
+                        // 1. Login
                         sh "echo $PASS | docker login -u $USER --password-stdin"
                         
-                        // 2. Construction de l'image avec un Tag unique (numéro du build)
-                        sh "docker build -t yappa01/student-app:${env.BUILD_NUMBER} ."
+                        // 2. Push de la version précise
+                        sh "docker push ${IMAGE_NAME}:${env.BUILD_NUMBER}"
                         
-                        // 3. Envoi de l'image versionnée
-                        sh "docker push yappa01/student-app:${env.BUILD_NUMBER}"
-                        
-                        // 4. Mise à jour du tag 'latest' et envoi
-                        sh "docker tag yappa01/student-app:${env.BUILD_NUMBER} yappa01/student-app:latest"
-                        sh "docker push yappa01/student-app:latest"
+                        // 3. Push de la version latest
+                        sh "docker push ${IMAGE_NAME}:latest"
                     }
                 }
             }
         }
-        // -----------------------------
     }
 
     post {
         success {
-            echo "✅ Build, Analyse et Déploiement Docker réussis !"
+            echo "✅ Pipeline terminé avec succès !"
             junit 'target/surefire-reports/*.xml'
         }
         failure {
-            echo "❌ Le pipeline a échoué !"
+            echo "❌ Le pipeline a échoué."
+        }
+        always {
+            // Nettoyage de l'espace disque (supprime les images locales après le push)
+            sh "docker rmi ${IMAGE_NAME}:${env.BUILD_NUMBER} || true"
+            sh "docker rmi ${IMAGE_NAME}:latest || true"
         }
     }
 }
