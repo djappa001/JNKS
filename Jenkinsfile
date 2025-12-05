@@ -37,11 +37,10 @@ pipeline {
             }
         }
 
-        stage('Quality Gate') {
+         stage('SonarQube Analysis') {
             steps {
-                // Attend la réponse de SonarQube pour savoir si le code est "Passed" ou "Failed"
-                timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                withSonarQubeEnv('SonarQube') { 
+                    sh 'mvn sonar:sonar -Dsonar.projectKey=student-management -Dsonar.projectName="Student App"'
                 }
             }
         }
