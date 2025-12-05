@@ -89,18 +89,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Pipeline réussi avec succès !"
-            // Publie les résultats des tests JUnit dans Jenkins
+            echo "✅ Build, Analyse et Déploiement Docker réussis !"
             junit 'target/surefire-reports/*.xml'
         }
         failure {
-            echo "❌ Le pipeline a échoué. Vérifie les logs."
-        }
-        always {
-            // NETTOYAGE (Très important pour Vagrant)
-            echo "🧹 Nettoyage des images Docker locales..."
-            sh "docker rmi ${IMAGE_NAME}:${env.BUILD_NUMBER} || true"
-            sh "docker rmi ${IMAGE_NAME}:latest || true"
+            echo "❌ Le pipeline a échoué !"
         }
     }
 }
