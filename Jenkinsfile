@@ -2,36 +2,44 @@ pipeline {
     agent any
 
     tools {
+        // Assure-toi que ces noms correspondent à ta config dans "Global Tool Configuration"
         maven 'M2_HOME' 
         jdk 'JAVA_HOME'
     }
 
     environment {
-        // Définit le nom de l'image pour éviter de le répéter partout
+        // Nom de ton image Docker
         IMAGE_NAME = "yappa01/student-app"
+        // Clé du projet SonarQube (doit correspondre à ce que tu as mis dans le dashboard Sonar)
+        SONAR_PROJECT_KEY = "student-management"
+        SONAR_PROJECT_NAME = "Student App"
     }
 
     stages {
         stage('Checkout') {
             steps {
+                // Récupération du code source
                 git branch: 'main', url: 'https://github.com/djappa001/JNKS.git'
             }
         }
 
-        // CORRECTION 0% COUVERTURE :
-        // On utilise 'verify' au lieu de 'test' pour générer le rapport JaCoCo
-        // Et on lance sonar tout de suite après pour qu'il trouve le rapport.
         stage('Build, Test & Analyze') {
             steps {
-                withSonarQubeEnv('SonarQube') { 
-                    sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=student-management -Dsonar.projectName="Student App"'
+                script {
+                    // Utilisation de l'environnement SonarQube configuré dans Jenkins
+                    withSonarQubeEnv('SonarQube') { 
+                        // CRUCIAL : On lance 'clean verify sonar:sonar' en UNE seule commande.
+                        // 'verify' génère le rapport JaCoCo (target/site/jacoco/jacoco.xml)
+                        // 'sonar:sonar' le lit immédiatement après.
+                        sh "mvn clean verify sonar:sonar -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName='${SONAR_PROJECT_NAME}'"
+                    }
                 }
             }
         }
-        
-        // Attente de la validation du Quality Gate (Optionnel mais recommandé)
+
         stage('Quality Gate') {
             steps {
+                // Attend la réponse de SonarQube pour savoir si le code est "Passed" ou "Failed"
                 timeout(time: 2, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
@@ -40,40 +48,39 @@ pipeline {
        
         stage('Code Packaging'){
             steps{
-                // Crée le .jar sans relancer les tests (déjà faits avant)
+                // Génère le fichier .jar dans le dossier target/
+                // On saute les tests ici car ils ont déjà été faits à l'étape "Build & Analyze"
                 sh 'mvn package -DskipTests' 
             }
         }
 
-        // --- ÉTAPE 1 : DOCKER BUILD (Construction seulement) ---
         stage('Docker Build') {
             steps {
                 script {
                     echo "🔨 Construction de l'image Docker..."
-                    // Construction avec le numéro de build
+                    // Construction avec le tag du numéro de build (ex: :21)
                     sh "docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} ."
                     
-                    // Tag de la version 'latest' en local
+                    // Création du tag 'latest' pour la version la plus récente
                     sh "docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${IMAGE_NAME}:latest"
                 }
             }
         }
 
-        // --- ÉTAPE 2 : DOCKER PUSH (Envoi seulement) ---
         stage('Docker Push') {
             steps {
                 script {
-                    // On ne récupère les identifiants QUE pour le push
+                    // Récupération sécurisée des identifiants DockerHub
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-id', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                        echo "📤 Connexion et Envoi vers Docker Hub..."
+                        echo "📤 Envoi vers Docker Hub..."
                         
-                        // 1. Login
+                        // 1. Connexion
                         sh "echo $PASS | docker login -u $USER --password-stdin"
                         
-                        // 2. Push de la version précise
+                        // 2. Envoi de la version spécifique
                         sh "docker push ${IMAGE_NAME}:${env.BUILD_NUMBER}"
                         
-                        // 3. Push de la version latest
+                        // 3. Envoi de la version latest
                         sh "docker push ${IMAGE_NAME}:latest"
                     }
                 }
@@ -83,14 +90,16 @@ pipeline {
 
     post {
         success {
-            echo "✅ Pipeline terminé avec succès !"
+            echo "✅ Pipeline réussi avec succès !"
+            // Publie les résultats des tests JUnit dans Jenkins
             junit 'target/surefire-reports/*.xml'
         }
         failure {
-            echo "❌ Le pipeline a échoué."
+            echo "❌ Le pipeline a échoué. Vérifie les logs."
         }
         always {
-            // Nettoyage de l'espace disque (supprime les images locales après le push)
+            // NETTOYAGE (Très important pour Vagrant)
+            echo "🧹 Nettoyage des images Docker locales..."
             sh "docker rmi ${IMAGE_NAME}:${env.BUILD_NUMBER} || true"
             sh "docker rmi ${IMAGE_NAME}:latest || true"
         }
