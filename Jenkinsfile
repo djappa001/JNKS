@@ -2,23 +2,25 @@ pipeline {
     agent any
 
     tools {
-        // Assure-toi que ces noms correspondent à ta config dans "Global Tool Configuration"
         maven 'M2_HOME' 
         jdk 'JAVA_HOME'
     }
 
     environment {
-        // Nom de ton image Docker
+        // Ton image Docker Hub
         IMAGE_NAME = "yappa01/student-app"
-        // Clé du projet SonarQube (doit correspondre à ce que tu as mis dans le dashboard Sonar)
+        // Infos SonarQube
         SONAR_PROJECT_KEY = "student-management"
         SONAR_PROJECT_NAME = "Student App"
+        // Namespace Kubernetes
+        K8S_NAMESPACE = "devops"
+        // Nom du déploiement K8s (défini dans ton spring-deployment.yaml)
+        K8S_DEPLOYMENT_NAME = "spring-app"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                // Récupération du code source
                 git branch: 'main', url: 'https://github.com/djappa001/JNKS.git'
             }
         }
@@ -26,29 +28,17 @@ pipeline {
         stage('Build, Test & Analyze') {
             steps {
                 script {
-                    // Utilisation de l'environnement SonarQube configuré dans Jenkins
                     withSonarQubeEnv('SonarQube') { 
-                        // CRUCIAL : On lance 'clean verify sonar:sonar' en UNE seule commande.
-                        // 'verify' génère le rapport JaCoCo (target/site/jacoco/jacoco.xml)
-                        // 'sonar:sonar' le lit immédiatement après.
+                        // On fait tout en une fois : Clean, Compile, Test, et Analyse Sonar
                         sh "mvn clean verify sonar:sonar -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName='${SONAR_PROJECT_NAME}'"
                     }
-                }
-            }
-        }
-
-         stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') { 
-                    sh 'mvn sonar:sonar -Dsonar.projectKey=student-management -Dsonar.projectName="Student App"'
                 }
             }
         }
        
         stage('Code Packaging'){
             steps{
-                // Génère le fichier .jar dans le dossier target/
-                // On saute les tests ici car ils ont déjà été faits à l'étape "Build & Analyze"
+                // Création du .jar final sans relancer les tests (déjà faits avant)
                 sh 'mvn package -DskipTests' 
             }
         }
@@ -56,11 +46,10 @@ pipeline {
         stage('Docker Build') {
             steps {
                 script {
-                    echo "🔨 Construction de l'image Docker..."
-                    // Construction avec le tag du numéro de build (ex: :21)
+                    echo "🔨 Construction de l'image Docker : ${env.BUILD_NUMBER}..."
+                    // Construction avec le numéro de build unique
                     sh "docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} ."
-                    
-                    // Création du tag 'latest' pour la version la plus récente
+                    // Tag 'latest' pour la référence
                     sh "docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${IMAGE_NAME}:latest"
                 }
             }
@@ -69,19 +58,29 @@ pipeline {
         stage('Docker Push') {
             steps {
                 script {
-                    // Récupération sécurisée des identifiants DockerHub
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-id', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
                         echo "📤 Envoi vers Docker Hub..."
-                        
-                        // 1. Connexion
                         sh "echo $PASS | docker login -u $USER --password-stdin"
-                        
-                        // 2. Envoi de la version spécifique
                         sh "docker push ${IMAGE_NAME}:${env.BUILD_NUMBER}"
-                        
-                        // 3. Envoi de la version latest
                         sh "docker push ${IMAGE_NAME}:latest"
                     }
+                }
+            }
+        }
+
+        // --- NOUVELLE ÉTAPE : DÉPLOIEMENT KUBERNETES ---
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    echo "🚀 Mise à jour du cluster Kubernetes..."
+                    
+                    // 1. On dit à Kubernetes de changer l'image du déploiement
+                    // Il va utiliser la version précise qu'on vient de builder (:23, :24, etc.)
+                    // Cela force K8s à télécharger la nouvelle version.
+                    sh "kubectl set image deployment/${K8S_DEPLOYMENT_NAME} spring-app=${IMAGE_NAME}:${env.BUILD_NUMBER} -n ${K8S_NAMESPACE}"
+                    
+                    // 2. On attend que la mise à jour soit terminée pour valider le succès
+                    sh "kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}"
                 }
             }
         }
@@ -89,11 +88,11 @@ pipeline {
 
     post {
         success {
-            echo "✅ Build, Analyse et Déploiement Docker réussis !"
+            echo "✅ Pipeline terminé avec SUCCÈS ! Application déployée."
             junit 'target/surefire-reports/*.xml'
         }
         failure {
-            echo "❌ Le pipeline a échoué !"
+            echo "❌ Le pipeline a échoué."
         }
     }
 }
