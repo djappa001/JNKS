@@ -29,7 +29,6 @@ pipeline {
             steps {
                 script {
                     withSonarQubeEnv('SonarQube') { 
-                        // On fait tout en une fois : Clean, Compile, Test, et Analyse Sonar
                         sh "mvn clean verify sonar:sonar -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName='${SONAR_PROJECT_NAME}'"
                     }
                 }
@@ -38,7 +37,6 @@ pipeline {
        
         stage('Code Packaging'){
             steps{
-                // Création du .jar final sans relancer les tests (déjà faits avant)
                 sh 'mvn package -DskipTests' 
             }
         }
@@ -47,9 +45,7 @@ pipeline {
             steps {
                 script {
                     echo "🔨 Construction de l'image Docker : ${env.BUILD_NUMBER}..."
-                    // Construction avec le numéro de build unique
                     sh "docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} ."
-                    // Tag 'latest' pour la référence
                     sh "docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${IMAGE_NAME}:latest"
                 }
             }
@@ -68,19 +64,37 @@ pipeline {
             }
         }
 
-        // --- NOUVELLE ÉTAPE : DÉPLOIEMENT KUBERNETES ---
-        stage('Deploy to Kubernetes') {
+        // --- ÉTAPE 1 : Kubernetes Deploy (Rapide ~1s) ---
+        // Cette étape envoie juste l'ordre de mise à jour au cluster
+        stage('Kubernetes Deploy') {
             steps {
                 script {
-                    echo "🚀 Mise à jour du cluster Kubernetes..."
+                    echo "🚀 Envoi de la configuration à Kubernetes..."
                     
-                    // 1. On dit à Kubernetes de changer l'image du déploiement
-                    // Il va utiliser la version précise qu'on vient de builder (:23, :24, etc.)
-                    // Cela force K8s à télécharger la nouvelle version.
+                    // On s'assure que le namespace existe
+                    sh "kubectl create namespace ${K8S_NAMESPACE} || true"
+                    
+                    // Si tu as des fichiers YAML dans ton git, tu peux décommenter la ligne suivante :
+                    // sh "kubectl apply -f k8s/ -n ${K8S_NAMESPACE}"
+
+                    // Mise à jour de l'image pour utiliser la nouvelle version buildée
                     sh "kubectl set image deployment/${K8S_DEPLOYMENT_NAME} spring-app=${IMAGE_NAME}:${env.BUILD_NUMBER} -n ${K8S_NAMESPACE}"
+                }
+            }
+        }
+
+        // --- ÉTAPE 2 : Deploy MySQL & Spring Boot on K8s (Validation ~40s) ---
+        // Cette étape attend que les pods soient réellement en vert (Running)
+        stage('Deploy MySQL & Spring Boot on K8s') {
+            steps {
+                script {
+                    echo "⏳ Attente du déploiement correct..."
                     
-                    // 2. On attend que la mise à jour soit terminée pour valider le succès
+                    // On attend que le déploiement soit terminé avec succès
                     sh "kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n ${K8S_NAMESPACE}"
+                    
+                    // (Optionnel) Vérification rapide des pods
+                    sh "kubectl get pods -n ${K8S_NAMESPACE}"
                 }
             }
         }
